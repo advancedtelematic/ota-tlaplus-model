@@ -2,9 +2,9 @@
 
 EXTENDS TLC
 
-CONSTANTS Namespace, Commit, Device, Nothing
+CONSTANTS Namespace, Commit, Device
 
-ASSUME NothingNotInCommit == Nothing \notin Commit
+Nothing == CHOOSE c : c \notin Commit
 
 VARIABLES namespaces, commits, devices, running, pending, staged
 
@@ -33,12 +33,12 @@ CreateAccount == \E ns \in Namespace :
   /\ namespaces' = namespaces \cup {ns}
   /\ UNCHANGED << commits, devices, running, pending, staged >>
 
-Bitbake == \E ns \in Namespace, c \in Commit :
+Bitbake(ns) == \E c \in Commit :
   /\ ns \in namespaces
   /\ commits' = commits \cup {<< ns, c >>}
   /\ UNCHANGED << namespaces, devices, running, pending, staged >>
 
-StartDevice == \E ns \in Namespace, c \in Commit, d \in Device :
+StartDevice(ns, c) == \E d \in Device :
   /\ ns          \in namespaces
   /\ << ns, c >> \in commits
   /\ << ns, d >> \notin devices
@@ -48,60 +48,80 @@ StartDevice == \E ns \in Namespace, c \in Commit, d \in Device :
   /\ staged'  = staged  @@ << ns, d >> :> Nothing
   /\ UNCHANGED << namespaces, commits >>
 
-ScheduleUpdate == \E ns \in Namespace, c \in Commit, d \in Device :
+ScheduleUpdate(ns, c, d) ==
   /\ ns          \in namespaces
   /\ << ns, c >> \in commits
   /\ << ns, d >> \in devices
   /\ c /= running[<< ns, d >>]
   /\ pending[<< ns, d >>] = Nothing
-  /\ pending'   = [ pending EXCEPT ![<< ns, d >>] = << ns, c >> ]
+  /\ pending' = [ pending EXCEPT ![<< ns, d >>] = << ns, c >> ]
   /\ UNCHANGED << namespaces, commits, devices, running, staged >>
 
-PullUpdate == \E ns \in Namespace, d \in Device :
+PullUpdate(ns, d) ==
   /\ ns          \in namespaces
   /\ << ns, d >> \in devices
-  /\ staged'  = IF pending[<< ns, d >>] = Nothing
+  /\ LET p == pending[<< ns, d >>] IN
+     staged'  = IF p = Nothing
                 THEN staged
-                ELSE [ staged EXCEPT ![<< ns, d >>] = pending[<< ns, d >>] ]
+                ELSE [ staged EXCEPT ![<< ns, d >>] = p ]
   /\ pending' = IF pending[<< ns, d >>] = Nothing
                 THEN pending
                 ELSE [ pending EXCEPT ![<< ns, d >>] = Nothing ]
   /\ UNCHANGED << namespaces, commits, devices, running >>
 
-RebootDevice == \E ns \in Namespace, d \in Device :
+RebootDevice(ns, d) ==
+  LET s == staged[<< ns, d >>] IN
   /\ ns          \in namespaces
   /\ << ns, d >> \in devices
-  /\ running' = IF staged[<< ns, d >>] = Nothing
+  /\ running' = IF s = Nothing
                 THEN running
-                ELSE [ running EXCEPT ![<< ns, d >>] = staged[<< ns, d >>] ]
-  /\ staged'  = IF staged[<< ns, d >>] = Nothing
+                ELSE [ running EXCEPT ![<< ns, d >>] = s ]
+  /\ staged'  = IF s = Nothing
                 THEN staged
                 ELSE [ staged EXCEPT ![<< ns, d >>] = Nothing ]
   /\ UNCHANGED << namespaces, commits, devices, pending >>
+
+OstreeAdminStatus(ns, d) == \E c \in Commit, pc \in Commit \cup {Nothing} :
+  /\ ns          \in namespaces
+  /\ << ns, d >> \in devices
+  /\ running[<< ns, d >>] = << ns, c >>
+  /\ pending[<< ns, d >>] = pc
+  /\ UNCHANGED << namespaces, commits, devices, pending, running, staged >>
 
 ------------------------------------------------------------------------
 
 Next ==
   \/ CreateAccount
-  \/ Bitbake
-  \/ StartDevice
-  \/ ScheduleUpdate
-  \/ PullUpdate
-  \/ RebootDevice
+  \/ (\E ns \in Namespace                             : Bitbake(ns))
+  \/ (\E ns \in Namespace, c \in Commit               : StartDevice(ns, c))
+  \/ (\E ns \in Namespace, c \in Commit, d \in Device : ScheduleUpdate(ns, c, d))
+  \/ (\E ns \in Namespace, d \in Device               : PullUpdate(ns, d))
+  \/ (\E ns \in Namespace, d \in Device               : RebootDevice(ns, d))
+  \/ (\E ns \in Namespace, d \in Device               : OstreeAdminStatus(ns, d))
 
 ------------------------------------------------------------------------
 
-DeviceCommitSameNamespace ==
-  \A << ns , d >> \in DOMAIN running :
-    /\ << ns , running[<< ns , d >>][2] >> \in commits
-    /\ << ns , d >> \in devices
-    /\ running[<< ns, d >>][1] = ns
+RunningOK ==
+  \A << ns , d >> \in DOMAIN running : \E c \in Commit :
+    running[<< ns, d >>] = << ns, c >>
+
+PendingOK ==
+  \A << ns , d >> \in DOMAIN pending : \E c \in Commit :
+    \/ pending[<< ns, d >>] = << ns, c >>
+    \/ pending[<< ns, d >>] = Nothing
+
+StagedOK ==
+  \A << ns , d >> \in DOMAIN staged : \E c \in Commit :
+    \/ staged[<< ns, d >>] = << ns, c >>
+    \/ staged[<< ns, d >>] = Nothing
 
 Inv ==
   /\ TypeOK
-  /\ DeviceCommitSameNamespace
+  /\ RunningOK
+  /\ PendingOK
+  /\ StagedOK
 
-vars == << commits, devices, running, pending, staged >>
+vars == << namespaces, commits, devices, running, pending, staged >>
 
 Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
 
