@@ -48,17 +48,6 @@ StartDevice == \E ns \in Namespace, c \in Commit, d \in Device :
   /\ staged'  = staged  @@ << ns, d >> :> Nothing
   /\ UNCHANGED << namespaces, commits >>
 
-BadStartDevice(ns, c, d) == \E ns2 \in Namespace :
-  /\ ns           \in namespaces
-  /\ ns2          \in namespaces
-  /\ << ns2, c >> \in commits
-  /\ << ns, d >>  \notin devices
-  /\ devices' = devices \cup {<< ns, d >>}
-  /\ running' = running @@ << ns, d >> :> << ns2, c >>
-  /\ pending' = pending @@ << ns, d >> :> Nothing
-  /\ staged'  = staged  @@ << ns, d >> :> Nothing
-  /\ UNCHANGED << namespaces, commits >>
-
 ScheduleUpdate == \E ns \in Namespace, c \in Commit, d \in Device :
   /\ ns          \in namespaces
   /\ << ns, c >> \in commits
@@ -71,9 +60,9 @@ ScheduleUpdate == \E ns \in Namespace, c \in Commit, d \in Device :
 PullUpdate == \E ns \in Namespace, d \in Device :
   /\ ns          \in namespaces
   /\ << ns, d >> \in devices
-  /\ staged' = IF pending[<< ns, d >>] = Nothing
-               THEN staged
-               ELSE [ staged EXCEPT ![<< ns, d >>] = pending[<< ns, d >>] ]
+  /\ staged'  = IF pending[<< ns, d >>] = Nothing
+                THEN staged
+                ELSE [ staged EXCEPT ![<< ns, d >>] = pending[<< ns, d >>] ]
   /\ pending' = IF pending[<< ns, d >>] = Nothing
                 THEN pending
                 ELSE [ pending EXCEPT ![<< ns, d >>] = Nothing ]
@@ -111,5 +100,9 @@ DeviceCommitSameNamespace ==
 Inv ==
   /\ TypeOK
   /\ DeviceCommitSameNamespace
+
+vars == << commits, devices, running, pending, staged >>
+
+Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
 
 ========================================================================
