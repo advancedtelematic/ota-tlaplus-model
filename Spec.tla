@@ -1,57 +1,115 @@
----- MODULE Spec ----------------------------------------------------
+---- MODULE Spec -------------------------------------------------------
 
-CONSTANTS Namespace, Commit, Device
+EXTENDS TLC
 
-VARIABLES namespaces, commits, devices, running
+CONSTANTS Namespace, Commit, Device, Nothing
 
-------------------------------------------------------------------------
+ASSUME NothingNotInCommit == Nothing \notin Commit
 
-TypeOK == /\ namespaces \subseteq Namespace
-          /\ commits    \in [ namespaces -> SUBSET Commit ]
-          /\ devices    \in [ namespaces -> SUBSET Device ]
-          /\ running    \in [ namespaces -> SUBSET (Device \X Commit) ]
-
-Init == /\ namespaces = {}
-        /\ commits    = [ ns \in namespaces |-> {} ]
-        /\ devices    = [ ns \in namespaces |-> {} ]
-        /\ running    = [ ns \in namespaces |-> {} ]
+VARIABLES namespaces, commits, devices, running, pending, staged
 
 ------------------------------------------------------------------------
 
-Empty(r, x)  == [ y \in DOMAIN r \cup {x} |-> IF x = y THEN {} ELSE r[y] ]
+TypeOK ==
+  /\ namespaces \subseteq Namespace
+  /\ commits    \subseteq namespaces \X Commit
+  /\ devices    \subseteq namespaces \X Device
+  /\ running    \in [ devices -> commits ]
+  /\ pending    \in [ devices -> commits \cup {Nothing} ]
+  /\ staged     \in [ devices -> commits \cup {Nothing} ]
 
-Add(r, f, v) == [ x \in DOMAIN r |-> IF x = f THEN r[x] \cup v ELSE r[x] ]
-
-DomainRel(r)   == { p[1] : p \in r }
-CodomainRel(r) == { p[2] : p \in r }
-
-TotalRelation(r, s) == DomainRel(r) = s
+Init ==
+  /\ namespaces = {}
+  /\ commits    = {}
+  /\ devices    = {}
+  /\ running    = [ d \in {} |-> {} ]
+  /\ pending    = [ d \in {} |-> {} ]
+  /\ staged     = [ d \in {} |-> {} ]
 
 ------------------------------------------------------------------------
 
-CreateAccount(ns) == /\ namespaces' = namespaces \cup {ns}
-                     /\ commits'    = Empty(commits, ns)
-                     /\ devices'    = Empty(devices, ns)
-                     /\ running'    = Empty(running, ns)
+CreateAccount == \E ns \in Namespace :
+  /\ ns \notin namespaces
+  /\ namespaces' = namespaces \cup {ns}
+  /\ UNCHANGED << commits, devices, running, pending, staged >>
 
-Bitbake(ns, c) == /\ commits' = Add(commits, ns, {c})
-                  /\ UNCHANGED namespaces
-                  /\ UNCHANGED devices
-                  /\ UNCHANGED running
+Bitbake == \E ns \in Namespace, c \in Commit :
+  /\ ns \in namespaces
+  /\ commits' = commits \cup {<< ns, c >>}
+  /\ UNCHANGED << namespaces, devices, running, pending, staged >>
 
-StartDevice(ns, c, d) == /\ ns \in namespaces
-                         /\ c \in commits[ns]
-                         /\ devices' = Add(devices, ns, {d})
-                         /\ running' = Add(running, ns, {<<d, c>>})
-                         /\ UNCHANGED namespaces
-                         /\ UNCHANGED commits
+StartDevice == \E ns \in Namespace, c \in Commit, d \in Device :
+  /\ ns          \in namespaces
+  /\ << ns, c >> \in commits
+  /\ << ns, d >> \notin devices
+  /\ devices' = devices \cup {<< ns, d >>}
+  /\ running' = running @@ << ns, d >> :> << ns, c >>
+  /\ pending' = pending @@ << ns, d >> :> Nothing
+  /\ staged'  = staged  @@ << ns, d >> :> Nothing
+  /\ UNCHANGED << namespaces, commits >>
 
-Next == \E ns \in Namespace, c \in Commit, d \in Device : \/ CreateAccount(ns)
-                                                          \/ Bitbake(ns, c)
-                                                          \/ StartDevice(ns, c, d)
+BadStartDevice(ns, c, d) == \E ns2 \in Namespace :
+  /\ ns           \in namespaces
+  /\ ns2          \in namespaces
+  /\ << ns2, c >> \in commits
+  /\ << ns, d >>  \notin devices
+  /\ devices' = devices \cup {<< ns, d >>}
+  /\ running' = running @@ << ns, d >> :> << ns2, c >>
+  /\ pending' = pending @@ << ns, d >> :> Nothing
+  /\ staged'  = staged  @@ << ns, d >> :> Nothing
+  /\ UNCHANGED << namespaces, commits >>
 
-Inv == /\ TypeOK
-       /\ \A ns \in namespaces : TotalRelation(running[ns], devices[ns])
-       /\ \A ns \in namespaces : \A c \in CodomainRel(running[ns]) : c \in commits[ns]
+ScheduleUpdate == \E ns \in Namespace, c \in Commit, d \in Device :
+  /\ ns          \in namespaces
+  /\ << ns, c >> \in commits
+  /\ << ns, d >> \in devices
+  /\ c /= running[<< ns, d >>]
+  /\ pending[<< ns, d >>] = Nothing
+  /\ pending'   = [ pending EXCEPT ![<< ns, d >>] = << ns, c >> ]
+  /\ UNCHANGED << namespaces, commits, devices, running, staged >>
+
+PullUpdate == \E ns \in Namespace, d \in Device :
+  /\ ns          \in namespaces
+  /\ << ns, d >> \in devices
+  /\ staged' = IF pending[<< ns, d >>] = Nothing
+               THEN staged
+               ELSE [ staged EXCEPT ![<< ns, d >>] = pending[<< ns, d >>] ]
+  /\ pending' = IF pending[<< ns, d >>] = Nothing
+                THEN pending
+                ELSE [ pending EXCEPT ![<< ns, d >>] = Nothing ]
+  /\ UNCHANGED << namespaces, commits, devices, running >>
+
+RebootDevice == \E ns \in Namespace, d \in Device :
+  /\ ns          \in namespaces
+  /\ << ns, d >> \in devices
+  /\ running' = IF staged[<< ns, d >>] = Nothing
+                THEN running
+                ELSE [ running EXCEPT ![<< ns, d >>] = staged[<< ns, d >>] ]
+  /\ staged'  = IF staged[<< ns, d >>] = Nothing
+                THEN staged
+                ELSE [ staged EXCEPT ![<< ns, d >>] = Nothing ]
+  /\ UNCHANGED << namespaces, commits, devices, pending >>
+
+------------------------------------------------------------------------
+
+Next ==
+  \/ CreateAccount
+  \/ Bitbake
+  \/ StartDevice
+  \/ ScheduleUpdate
+  \/ PullUpdate
+  \/ RebootDevice
+
+------------------------------------------------------------------------
+
+DeviceCommitSameNamespace ==
+  \A << ns , d >> \in DOMAIN running :
+    /\ << ns , running[<< ns , d >>][2] >> \in commits
+    /\ << ns , d >> \in devices
+    /\ running[<< ns, d >>][1] = ns
+
+Inv ==
+  /\ TypeOK
+  /\ DeviceCommitSameNamespace
 
 ========================================================================
