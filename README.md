@@ -1,5 +1,7 @@
 ## ota-tlaplus-model
 
+[![Build Status](https://api.travis-ci.org/advancedtelematic/ota-tlaplus-model.svg?branch=master)](https://travis-ci.org/advancedtelematic/ota-tlaplus-model)
+
 Work-in-progress TLA+ model of HERE OTA Connect.
 
 ### Prerequisites
