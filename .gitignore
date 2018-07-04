@@ -1,0 +1,4 @@
+*.pdf
+metadir/
+states/
+*.toolbox/
