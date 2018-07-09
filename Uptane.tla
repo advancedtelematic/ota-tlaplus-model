@@ -36,6 +36,7 @@ TypeOk ==
                     snapshot_size    : Sizes,
                     snapshot_version : Versions,
                     signatures       : SUBSET Signatures]
+     \cup {Nothing}
 
   (* Snapshot metadata *)
   /\ snapshot \in [version         : Versions,
@@ -45,6 +46,7 @@ TypeOk ==
                    targets_size    : Sizes,
                    targets_version : Versions,
                    signatures      : SUBSET Signatures]
+     \cup {Nothing}
 
   (* Targets metadata *)
   /\ targets \in [version      : Versions,
@@ -52,6 +54,7 @@ TypeOk ==
                   hash         : Hash,
                   targets_list : SUBSET Targets,
                   signatures   : SUBSET Signatures]
+     \cup {Nothing}
 
 RootOk ==
   /\ root.version > 0
@@ -70,31 +73,40 @@ RootOk ==
 
   /\ Cardinality(root.signatures) > 0
   (* Signatures on the initial root must only come from authorized keys and be valid *)
-  (*/\ \A signature \in root.signatures : signature.key \in root.role_role.keys /\ signature.valid*)
+  /\ \A signature \in root.signatures : signature.key \in root.root_role.keys /\ signature.valid
 
 TimestampOk ==
-  /\ timestamp.version > 0
-  /\ timestamp.snapshot_size > 0
-  /\ timestamp.snapshot_version > 0
-  /\ Cardinality(timestamp.signatures) > 0
+  \/ timestamp = Nothing
+  \/
+    /\ timestamp # Nothing
+    /\ timestamp.version > 0
+    /\ timestamp.snapshot_size > 0
+    /\ timestamp.snapshot_version > 0
+    /\ Cardinality(timestamp.signatures) > 0
 
 SnapshotOk ==
-  /\ snapshot.version > 0
-  /\ snapshot.size > 0
-  /\ snapshot.targets_size > 0
-  /\ snapshot.targets_version > 0
-  /\ Cardinality(snapshot.signatures) > 0
+  \/ snapshot = Nothing
+  \/
+    /\ snapshot # Nothing
+    /\ snapshot.version > 0
+    /\ snapshot.size > 0
+    /\ snapshot.targets_size > 0
+    /\ snapshot.targets_version > 0
+    /\ Cardinality(snapshot.signatures) > 0
 
 TargetsOk ==
-  /\ targets.version > 0
-  /\ targets.size > 0
-  /\ Cardinality(targets.signatures) > 0
+  \/ targets = Nothing
+  \/
+    /\ targets # Nothing
+    /\ targets.version > 0
+    /\ targets.size > 0
+    /\ Cardinality(targets.signatures) > 0
 
 RolesOk ==
   /\ RootOk
-  (* /\ TimestampOk *)
-  (* /\ SnapshotOk *)
-  (* /\ TargetsOk *)
+  /\ TimestampOk
+  /\ SnapshotOk
+  /\ TargetsOk
 
 Inv ==
   /\ TypeOk
@@ -103,12 +115,9 @@ Inv ==
 UpdateRoot ==
   (* Root must always increment by one *)
   /\ root' = [root EXCEPT !.version = @ + 1]
-  (* root' has a threshold of signatures from root' *)
-  /\ Cardinality(\A signature \in root'.signatures :
-                 signature \in root'.root_role.keys /\ signature.valid) >= root'.root_role.threshold
-  (* root' has a threshold of signatures from root *)
-  /\ Cardinality(\A signature \in root'.signatures :
-                 signature \in root.root_role.keys /\ signature.value) >= root.root_role.threshold
+
+  (* TODO valid signatures *)
+
   (* Dummy condition to halt execution *)
   /\ root.version < 8
   (* TODO rotate these *)
@@ -120,8 +129,7 @@ UpdateTimestamp ==
   (* We could update with expired root since that would tighten down the possible future states *)
   /\ ~ root.expired
 
-  /\ Cardinality(\A signature \in timestamp.signatures :
-                 signature \in root.timestamp_role.keys /\ signature.valid) >= root.timestamp_role.threshold
+  (* TODO valid signatures *)
 
   (* If we have no timestamp, accept whatever, otherwise restrictions apply *)
   /\ timestamp' =
@@ -142,8 +150,7 @@ UpdateSnapshot ==
   /\ ~ root.expired
   /\ ~ timestamp.expired
 
-  /\ Cardinality(\A signature \in snapshot.signatures :
-                 signature \in root.snapshot_role.keys /\ signature.valid) >= root.snapshot_role.threshold
+  (* TODO valid signatures *)
 
   (* If we have no snapshot, accept whatever, otherwise restrictions apply *)
   /\ snapshot' =
@@ -170,7 +177,7 @@ UpdateTargets ==
   /\ ~ snapshot.expired
 
   /\ Cardinality(\A signature \in targets.signatures :
-                 signature \in root.targets_role.keys /\ signature.valid) >= root.targets_role.threshold
+                 signature.key \in root.targets_role.keys /\ signature.valid) >= root.targets_role.threshold
   /\ targets' =
      IF targets = Nothing
      THEN targets
@@ -208,8 +215,8 @@ Init ==
   /\ TypeOk
   /\ RolesOk
 
-  (* Root always starts at version 1. This is the only restriction. *)
-  /\ root = [version |-> 1]
+  (* Root must start at version 1. *)
+  /\ root.version = 1
 
 Next ==
   \/ UpdateRoot
