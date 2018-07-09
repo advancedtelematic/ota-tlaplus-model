@@ -8,6 +8,9 @@ TLA := docker run -u $(shell id -u):$(shell id -g) --rm -it --workdir /mnt -v ${
 
 all: check pdfs # tlaps
 
+clean:
+	@git clean -X -d -f
+
 check:
 	${TLA} tlc -workers ${WORKERS} ${Spec}.tla
 
