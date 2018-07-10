@@ -5,7 +5,7 @@ CONSTANTS Nothing, Hash
 
 VARIABLES root, timestamp, snapshot, targets
 --------------------------------------------------------------------------------
-Versions == (1..8)
+Versions == (1..16)
 
 Thresholds == (1..3)
 
@@ -14,8 +14,6 @@ Sizes == (1..4)
 Keys == {"k1", "k2"}
 
 Roles == [keys : SUBSET Keys, threshold : Thresholds]
-
-Targets == BOOLEAN (* TODO *)
 
 (* Each key can sign once and be eiter valid or not *)
 Signatures == [key : Keys , valid : BOOLEAN]
@@ -73,7 +71,10 @@ RootOk ==
 
   /\ Cardinality(root.signatures) > 0
   (* Signatures on the initial root must only come from authorized keys and be valid *)
-  /\ \A signature \in root.signatures : signature.key \in root.root_role.keys /\ signature.valid
+  /\ LET valid_authorized_sigs ==
+         {signature \in root.signatures :
+          signature.key \in root.root_role.keys /\ signature.valid }
+     IN Cardinality(valid_authorized_sigs) > root.root_role.threshold
 
 TimestampOk ==
   \/ timestamp = Nothing
@@ -82,7 +83,6 @@ TimestampOk ==
     /\ timestamp.version > 0
     /\ timestamp.snapshot_size > 0
     /\ timestamp.snapshot_version > 0
-    /\ Cardinality(timestamp.signatures) > 0
 
 SnapshotOk ==
   \/ snapshot = Nothing
@@ -92,7 +92,6 @@ SnapshotOk ==
     /\ snapshot.size > 0
     /\ snapshot.targets_size > 0
     /\ snapshot.targets_version > 0
-    /\ Cardinality(snapshot.signatures) > 0
 
 TargetsOk ==
   \/ targets = Nothing
@@ -100,7 +99,6 @@ TargetsOk ==
     /\ targets # Nothing
     /\ targets.version > 0
     /\ targets.size > 0
-    /\ Cardinality(targets.signatures) > 0
 
 RolesOk ==
   /\ RootOk
@@ -116,33 +114,45 @@ UpdateRoot ==
   (* Root must always increment by one *)
   /\ root' = [root EXCEPT !.version = @ + 1]
 
-  (* TODO valid signatures *)
+  (* Cross signing of new root using old keys and new keys *)
+  /\ LET valid_authorized_sigs ==
+         {signature \in root'.signatures :
+          signature.key \in root.root_role.keys /\ signature.valid }
+     IN Cardinality(valid_authorized_sigs) > root.root_role.threshold
+  /\ LET valid_authorized_sigs ==
+         {signature \in root'.signatures :
+          signature.key \in root'.root_role.keys /\ signature.valid }
+     IN Cardinality(valid_authorized_sigs) > root'.root_role.threshold
 
   (* Dummy condition to halt execution *)
-  /\ root.version < 8
+  /\ root.version < 16
   (* TODO rotate these *)
   /\ UNCHANGED << timestamp, snapshot, targets >>
 
 UpdateTimestamp ==
+  /\ timestamp # Nothing
+
   (* Can't update timestamp if root is expired *)
   (* TODO this might not need to be true. *)
   (* We could update with expired root since that would tighten down the possible future states *)
   /\ ~ root.expired
 
-  (* TODO valid signatures *)
+  /\ LET valid_authorized_sigs ==
+         {signature \in timestamp.signatures :
+          signature.key \in root.timestamp_role.keys /\ signature.valid }
+     IN Cardinality(valid_authorized_sigs) > root.timestamp_role.threshold
 
   (* If we have no timestamp, accept whatever, otherwise restrictions apply *)
   /\ timestamp' =
-     IF timestamp = Nothing
-     THEN timestamp
-     ELSE LET ts == CHOOSE t \in timestamp : t.version > timestamp.version
-          IN [timestamp EXCEPT !.version = ts.version]
+     LET ts == CHOOSE t \in timestamp : t.version > timestamp.version
+     IN [timestamp EXCEPT !.version = ts.version]
   (* Dummy condition to halt execution *)
-  /\ timestamp.version < 8
+  /\ timestamp.version < 16
   /\ UNCHANGED << root, snapshot, targets >>
 
 UpdateSnapshot ==
   /\ timestamp # Nothing
+  /\ snapshot  # Nothing
 
   (* Can't update timestamp if root is expired *)
   (* TODO these might not need to be true. *)
@@ -150,24 +160,26 @@ UpdateSnapshot ==
   /\ ~ root.expired
   /\ ~ timestamp.expired
 
-  (* TODO valid signatures *)
+  /\ LET valid_authorized_sigs ==
+         {signature \in snapshot.signatures :
+          signature.key \in root.snapshot_role.keys /\ signature.valid }
+     IN Cardinality(valid_authorized_sigs) > root.snapshot_role.threshold
 
   (* If we have no snapshot, accept whatever, otherwise restrictions apply *)
   /\ snapshot' =
-     IF snapshot = Nothing
-     THEN snapshot
-     ELSE LET sn == CHOOSE s \in snapshot : s.version > snapshot.version
-          IN [snapshot EXCEPT !.version = sn.version]
+     LET sn == CHOOSE s \in snapshot : s.version > snapshot.version
+     IN [snapshot EXCEPT !.version = sn.version]
 
   /\ snapshot.hash = timestamp.snapshot_hash
   /\ snapshot.size <= timestamp.snapshot_size
   (* Dummy condition to halt execution *)
-  /\ snapshot.version < 8
+  /\ snapshot.version < 16
   /\ UNCHANGED << root, timestamp, targets >>
 
 UpdateTargets ==
   /\ timestamp # Nothing
   /\ snapshot  # Nothing
+  /\ targets   # Nothing
 
   (* Can't update timestamp if root is expired *)
   (* TODO these might not need to be true. *)
@@ -177,14 +189,17 @@ UpdateTargets ==
   /\ ~ snapshot.expired
 
   /\ Cardinality(\A signature \in targets.signatures :
-                 signature.key \in root.targets_role.keys /\ signature.valid) >= root.targets_role.threshold
+                 signature.key \in root.targets_role.keys
+                 /\ signature.valid) >= root.targets_role.threshold
+
   /\ targets' =
-     IF targets = Nothing
-     THEN targets
-     ELSE LET ta == CHOOSE t \in targets : t.version > targets.version
-          IN [targets EXCEPT !.version = ta.version]
+     LET ta == CHOOSE t \in targets : t.version > targets.version
+     IN [targets EXCEPT !.version = ta.version]
   /\ targets.hash = snapshot.targets_hash
   /\ targets.size <= snapshot.targets_size
+
+  (* Dummy condition to halt execution *)
+  /\ targets.version < 16
   /\ UNCHANGED << root, timestamp, snapshot >>
 
 DownloadTarget ==
