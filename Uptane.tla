@@ -3,13 +3,17 @@ EXTENDS TLC, Naturals, FiniteSets
 
 CONSTANTS Nothing, Hash
 
-VARIABLES root, timestamp, snapshot, targets
+VARIABLES root, timestamp, snapshot, targets, acquired_target
 --------------------------------------------------------------------------------
-Versions == (1..16)
+Versions == (1..128)
 
 Thresholds == (1..3)
 
 Sizes == (1..4)
+
+Targets == (1..16)
+
+WantedTarget == CHOOSE t \in Targets : TRUE
 
 Keys == {"k1", "k2"}
 
@@ -111,8 +115,9 @@ Inv ==
   /\ RolesOk
 --------------------------------------------------------------------------------
 UpdateRoot ==
+  /\ acquired_target = Nothing
   (* Root must always increment by one *)
-  /\ root' = [root EXCEPT !.version = @ + 1]
+  /\ root' = CHOOSE r \in root : r.version = root.version + 1
 
   (* Cross signing of new root using old keys and new keys *)
   /\ LET valid_authorized_sigs ==
@@ -124,12 +129,14 @@ UpdateRoot ==
           signature.key \in root'.root_role.keys /\ signature.valid }
      IN Cardinality(valid_authorized_sigs) > root'.root_role.threshold
 
-  (* Dummy condition to halt execution *)
-  /\ root.version < 16
-  (* TODO rotate these *)
-  /\ UNCHANGED << timestamp, snapshot, targets >>
+  (* TODO We could be smarter about rotation *)
+  /\ timestamp' = Nothing
+  /\ snapshot'  = Nothing
+  /\ targets'   = Nothing
+  /\ UNCHANGED << acquired_target >>
 
 UpdateTimestamp ==
+  /\ acquired_target = Nothing
   /\ timestamp # Nothing
 
   (* Can't update timestamp if root is expired *)
@@ -143,14 +150,11 @@ UpdateTimestamp ==
      IN Cardinality(valid_authorized_sigs) > root.timestamp_role.threshold
 
   (* If we have no timestamp, accept whatever, otherwise restrictions apply *)
-  /\ timestamp' =
-     LET ts == CHOOSE t \in timestamp : t.version > timestamp.version
-     IN [timestamp EXCEPT !.version = ts.version]
-  (* Dummy condition to halt execution *)
-  /\ timestamp.version < 16
-  /\ UNCHANGED << root, snapshot, targets >>
+  /\ timestamp' = CHOOSE t \in timestamp : t.version > timestamp.version
+  /\ UNCHANGED << root, snapshot, targets, acquired_target >>
 
 UpdateSnapshot ==
+  /\ acquired_target = Nothing
   /\ timestamp # Nothing
   /\ snapshot  # Nothing
 
@@ -164,19 +168,13 @@ UpdateSnapshot ==
          {signature \in snapshot.signatures :
           signature.key \in root.snapshot_role.keys /\ signature.valid }
      IN Cardinality(valid_authorized_sigs) > root.snapshot_role.threshold
-
-  (* If we have no snapshot, accept whatever, otherwise restrictions apply *)
-  /\ snapshot' =
-     LET sn == CHOOSE s \in snapshot : s.version > snapshot.version
-     IN [snapshot EXCEPT !.version = sn.version]
-
+  /\ snapshot' = CHOOSE s \in snapshot : s.version > snapshot.version
   /\ snapshot.hash = timestamp.snapshot_hash
   /\ snapshot.size <= timestamp.snapshot_size
-  (* Dummy condition to halt execution *)
-  /\ snapshot.version < 16
-  /\ UNCHANGED << root, timestamp, targets >>
+  /\ UNCHANGED << root, timestamp, targets, acquired_target >>
 
 UpdateTargets ==
+  /\ acquired_target = Nothing
   /\ timestamp # Nothing
   /\ snapshot  # Nothing
   /\ targets   # Nothing
@@ -192,17 +190,14 @@ UpdateTargets ==
                  signature.key \in root.targets_role.keys
                  /\ signature.valid) >= root.targets_role.threshold
 
-  /\ targets' =
-     LET ta == CHOOSE t \in targets : t.version > targets.version
-     IN [targets EXCEPT !.version = ta.version]
+  /\ targets' = CHOOSE t \in targets : t.version > targets.version
   /\ targets.hash = snapshot.targets_hash
   /\ targets.size <= snapshot.targets_size
 
-  (* Dummy condition to halt execution *)
-  /\ targets.version < 16
-  /\ UNCHANGED << root, timestamp, snapshot >>
+  /\ UNCHANGED << root, timestamp, snapshot, acquired_target >>
 
 DownloadTarget ==
+  /\ acquired_target # Nothing
   (* All metadata must be present *)
   /\ root      # Nothing
   /\ timestamp # Nothing
@@ -215,12 +210,14 @@ DownloadTarget ==
   /\ ~ snapshot.expired
   /\ ~ targets.expired
 
-  (* Downloading at target does not change the metadata *)
+  /\ WantedTarget \in targets.targets
+
+  /\ acquired_target' = WantedTarget
   /\ UNCHANGED << root, timestamp, snapshot, targets >>
 
-(* Dummy state to halt execution *)
 Done ==
-  /\ UNCHANGED << root, timestamp, snapshot, targets >>
+  /\ WantedTarget # Nothing
+  /\ UNCHANGED << root, timestamp, snapshot, targets, acquired_target >>
 --------------------------------------------------------------------------------
 Init ==
   /\ timestamp = Nothing
@@ -232,6 +229,7 @@ Init ==
 
   (* Root must start at version 1. *)
   /\ root.version = 1
+  /\ acquired_target = Nothing
 
 Next ==
   \/ UpdateRoot
@@ -241,6 +239,6 @@ Next ==
   \/ DownloadTarget
   \/ Done
 --------------------------------------------------------------------------------
-vars == << root, timestamp, snapshot, targets >>
+vars == << root, timestamp, snapshot, targets, acquired_target >>
 Uptane == Init /\ [][Next]_vars
 ================================================================================
