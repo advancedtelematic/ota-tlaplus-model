@@ -12,7 +12,7 @@ clean:
 	@git clean -X -d -f
 
 check:
-	${TLA} tlc -simulate -seed 1312 -depth 50 -workers ${WORKERS} ${Spec}.tla
+	${TLA} tlc -simulate -seed 1312 -depth 64 -workers ${WORKERS} ${Spec}.tla
 
 tlaps:
 	${TLA} tlapm -I /usr/local/lib/tlaps ${Spec}.tla

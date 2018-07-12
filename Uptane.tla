@@ -1,244 +1,91 @@
 ---- MODULE Uptane -------------------------------------------------------------
-EXTENDS TLC, Naturals, FiniteSets
+EXTENDS TLC, Naturals, FiniteSets, Sequences
 
-CONSTANTS Nothing, Hash
+CONSTANTS Nothing
 
-VARIABLES root, timestamp, snapshot, targets, acquired_target
+VARIABLES desired_target, acquired_target, root_metas, targets_meta
 --------------------------------------------------------------------------------
-Versions == (1..128)
+Versions == (1..64)
 
 Thresholds == (1..3)
 
-Sizes == (1..4)
-
-Targets == (1..16)
-
-WantedTarget == CHOOSE t \in Targets : TRUE
-
 Keys == {"k1", "k2"}
 
-Roles == [keys : SUBSET Keys, threshold : Thresholds]
+Targets == (1..8)
+ChooseableTargets == Targets \union {Nothing}
+--------------------------------------------------------------------------------
+Last(s) ==
+  LET len == Len(s)
+  IN IF len = 1
+     THEN Head(s)
+     ELSE Head(SubSeq(s, len, len))
+--------------------------------------------------------------------------------
+Role ==
+  [keys      : Keys,
+   threshold : Thresholds]
 
-(* Each key can sign once and be eiter valid or not *)
-Signatures == [key : Keys , valid : BOOLEAN]
+TargetsMeta ==
+  [version : Versions,
+   targets : SUBSET Targets]
+
+RootMeta ==
+  [version      : Versions,
+   targets_role : Role]
 --------------------------------------------------------------------------------
 TypeOk ==
-  (* Root metadata *)
-  /\ root \in [version        : Versions,
-               expired        : BOOLEAN,
-               root_role      : Roles,
-               targets_role   : Roles,
-               snapshot_role  : Roles,
-               timestamp_role : Roles,
-               signatures     : SUBSET Signatures]
+  /\ desired_target  \in ChooseableTargets
+  /\ acquired_target \in ChooseableTargets
 
-  (* Timestamp metadata *)
-  /\ timestamp \in [version          : Versions,
-                    snapshot_hash    : Hash,
-                    snapshot_size    : Sizes,
-                    snapshot_version : Versions,
-                    signatures       : SUBSET Signatures]
-     \cup {Nothing}
-
-  (* Snapshot metadata *)
-  /\ snapshot \in [version         : Versions,
-                   size            : Sizes,
-                   hash            : Hash,
-                   targets_hash    : Hash,
-                   targets_size    : Sizes,
-                   targets_version : Versions,
-                   signatures      : SUBSET Signatures]
-     \cup {Nothing}
-
-  (* Targets metadata *)
-  /\ targets \in [version      : Versions,
-                  size         : Sizes,
-                  hash         : Hash,
-                  targets_list : SUBSET Targets,
-                  signatures   : SUBSET Signatures]
-     \cup {Nothing}
-
-RootOk ==
-  /\ root.version > 0
-
-  (* Thresholds are greater than zero *)
-  /\ root.root_role.threshold      > 0
-  /\ root.targets_role.threshold   > 0
-  /\ root.snapshot_role.threshold  > 0
-  /\ root.timestamp_role.threshold > 0
-
-  (* Roles can't have a number of keys lower than their threshold *)
-  /\ Cardinality(root.root_role.keys)      >= root.root_role.threshold
-  /\ Cardinality(root.targets_role.keys)   >= root.targets_role.threshold
-  /\ Cardinality(root.snapshot_role.keys)  >= root.snapshot_role.threshold
-  /\ Cardinality(root.timestamp_role.keys) >= root.timestamp_role.threshold
-
-  /\ Cardinality(root.signatures) > 0
-  (* Signatures on the initial root must only come from authorized keys and be valid *)
-  /\ LET valid_authorized_sigs ==
-         {signature \in root.signatures :
-          signature.key \in root.root_role.keys /\ signature.valid }
-     IN Cardinality(valid_authorized_sigs) > root.root_role.threshold
-
-TimestampOk ==
-  \/ timestamp = Nothing
-  \/
-    /\ timestamp # Nothing
-    /\ timestamp.version > 0
-    /\ timestamp.snapshot_size > 0
-    /\ timestamp.snapshot_version > 0
-
-SnapshotOk ==
-  \/ snapshot = Nothing
-  \/
-    /\ snapshot # Nothing
-    /\ snapshot.version > 0
-    /\ snapshot.size > 0
-    /\ snapshot.targets_size > 0
-    /\ snapshot.targets_version > 0
-
-TargetsOk ==
-  \/ targets = Nothing
-  \/
-    /\ targets # Nothing
-    /\ targets.version > 0
-    /\ targets.size > 0
-
-RolesOk ==
-  /\ RootOk
-  /\ TimestampOk
-  /\ SnapshotOk
-  /\ TargetsOk
-
-Inv ==
-  /\ TypeOk
-  /\ RolesOk
+  /\ \A i \in (1..Len(root_metas)) : Last(SubSeq(root_metas, 1, i)).version = i
+  /\ targets_meta \in TargetsMeta \union {Nothing}
 --------------------------------------------------------------------------------
-UpdateRoot ==
-  /\ acquired_target = Nothing
-  (* Root must always increment by one *)
-  /\ root' = CHOOSE r \in root : r.version = root.version + 1
-
-  (* Cross signing of new root using old keys and new keys *)
-  /\ LET valid_authorized_sigs ==
-         {signature \in root'.signatures :
-          signature.key \in root.root_role.keys /\ signature.valid }
-     IN Cardinality(valid_authorized_sigs) > root.root_role.threshold
-  /\ LET valid_authorized_sigs ==
-         {signature \in root'.signatures :
-          signature.key \in root'.root_role.keys /\ signature.valid }
-     IN Cardinality(valid_authorized_sigs) > root'.root_role.threshold
-
-  (* TODO We could be smarter about rotation *)
-  /\ timestamp' = Nothing
-  /\ snapshot'  = Nothing
-  /\ targets'   = Nothing
-  /\ UNCHANGED << acquired_target >>
-
-UpdateTimestamp ==
-  /\ acquired_target = Nothing
-  /\ timestamp # Nothing
-
-  (* Can't update timestamp if root is expired *)
-  (* TODO this might not need to be true. *)
-  (* We could update with expired root since that would tighten down the possible future states *)
-  /\ ~ root.expired
-
-  /\ LET valid_authorized_sigs ==
-         {signature \in timestamp.signatures :
-          signature.key \in root.timestamp_role.keys /\ signature.valid }
-     IN Cardinality(valid_authorized_sigs) > root.timestamp_role.threshold
-
-  (* If we have no timestamp, accept whatever, otherwise restrictions apply *)
-  /\ timestamp' = CHOOSE t \in timestamp : t.version > timestamp.version
-  /\ UNCHANGED << root, snapshot, targets, acquired_target >>
-
-UpdateSnapshot ==
-  /\ acquired_target = Nothing
-  /\ timestamp # Nothing
-  /\ snapshot  # Nothing
-
-  (* Can't update timestamp if root is expired *)
-  (* TODO these might not need to be true. *)
-  (* We could update with expired metadata since that would tighten down the possible future states *)
-  /\ ~ root.expired
-  /\ ~ timestamp.expired
-
-  /\ LET valid_authorized_sigs ==
-         {signature \in snapshot.signatures :
-          signature.key \in root.snapshot_role.keys /\ signature.valid }
-     IN Cardinality(valid_authorized_sigs) > root.snapshot_role.threshold
-  /\ snapshot' = CHOOSE s \in snapshot : s.version > snapshot.version
-  /\ snapshot.hash = timestamp.snapshot_hash
-  /\ snapshot.size <= timestamp.snapshot_size
-  /\ UNCHANGED << root, timestamp, targets, acquired_target >>
-
-UpdateTargets ==
-  /\ acquired_target = Nothing
-  /\ timestamp # Nothing
-  /\ snapshot  # Nothing
-  /\ targets   # Nothing
-
-  (* Can't update timestamp if root is expired *)
-  (* TODO these might not need to be true. *)
-  (* We could update with expired metadata since that would tighten down the possible future states *)
-  /\ ~ root.expired
-  /\ ~ timestamp.expired
-  /\ ~ snapshot.expired
-
-  /\ Cardinality(\A signature \in targets.signatures :
-                 signature.key \in root.targets_role.keys
-                 /\ signature.valid) >= root.targets_role.threshold
-
-  /\ targets' = CHOOSE t \in targets : t.version > targets.version
-  /\ targets.hash = snapshot.targets_hash
-  /\ targets.size <= snapshot.targets_size
-
-  /\ UNCHANGED << root, timestamp, snapshot, acquired_target >>
+SelectTarget ==
+  /\ desired_target'  = CHOOSE t \in ChooseableTargets : TRUE
+  /\ acquired_target' = Nothing
+  /\ UNCHANGED << root_metas, targets_meta >>
 
 DownloadTarget ==
-  /\ acquired_target # Nothing
-  (* All metadata must be present *)
-  /\ root      # Nothing
-  /\ timestamp # Nothing
-  /\ snapshot  # Nothing
-  /\ targets   # Nothing
+  /\ desired_target   # Nothing
+  /\ acquired_target' = desired_target
+  /\ desired_target'  = Nothing
+  /\ UNCHANGED << root_metas, targets_meta >>
 
-  (* All metadata must not be expired *)
-  /\ ~ root.expired
-  /\ ~ timestamp.expired
-  /\ ~ snapshot.expired
-  /\ ~ targets.expired
+UpdateRootMeta ==
+  /\ LET new_root == CHOOSE r \in RootMeta : r.version = Last(root_metas).version + 1
+     IN root_metas' = Append(root_metas, new_root)
+  /\ UNCHANGED << desired_target, acquired_target, targets_meta >>
 
-  /\ WantedTarget \in targets.targets
-
-  /\ acquired_target' = WantedTarget
-  /\ UNCHANGED << root, timestamp, snapshot, targets >>
-
-Done ==
-  /\ WantedTarget # Nothing
-  /\ UNCHANGED << root, timestamp, snapshot, targets, acquired_target >>
+UpdateTargetsMeta ==
+  /\ targets_meta' =
+     IF targets_meta = Nothing
+     THEN CHOOSE t \in TargetsMeta : t.version > 0
+     ELSE CHOOSE t \in TargetsMeta : t.version > targets_meta.version
+  /\ UNCHANGED << root_metas, desired_target, acquired_target >>
 --------------------------------------------------------------------------------
-Init ==
-  /\ timestamp = Nothing
-  /\ snapshot  = Nothing
-  /\ targets   = Nothing
-
+TargetOk ==
+  \/ acquired_target = Nothing
+  \/ /\ acquired_target # Nothing
+     (* A valid target must be present in the targets metadata. *)
+     /\ acquired_target \in targets_meta.targets
+--------------------------------------------------------------------------------
+Inv ==
   /\ TypeOk
-  /\ RolesOk
+  /\ TargetOk
 
-  (* Root must start at version 1. *)
-  /\ root.version = 1
+Init ==
+  (* Root metadata must always start at 1 *)
+  /\ root_metas = << CHOOSE r \in RootMeta : r.version = 1 >>
+
+  /\ desired_target  = Nothing
   /\ acquired_target = Nothing
+  /\ targets_meta    = Nothing
 
 Next ==
-  \/ UpdateRoot
-  \/ UpdateTimestamp
-  \/ UpdateSnapshot
-  \/ UpdateTargets
+  \/ UpdateRootMeta
+  \/ UpdateTargetsMeta
+  \/ SelectTarget
   \/ DownloadTarget
-  \/ Done
 --------------------------------------------------------------------------------
-vars == << root, timestamp, snapshot, targets, acquired_target >>
+vars == << desired_target, acquired_target, root_metas, targets_meta >>
 Uptane == Init /\ [][Next]_vars
 ================================================================================
