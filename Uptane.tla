@@ -20,24 +20,51 @@ Last(s) ==
      THEN Head(s)
      ELSE Head(SubSeq(s, len, len))
 --------------------------------------------------------------------------------
+Signature ==
+  [key   : Keys,
+   valid : BOOLEAN]
+
 Role ==
-  [keys      : Keys,
+  [keys      : SUBSET Keys,
    threshold : Thresholds]
 
-TargetsMeta ==
-  [version : Versions,
-   targets : SUBSET Targets]
-
 RootMeta ==
-  [version      : Versions,
+  [signatures   : SUBSET Signature,
+   version      : Versions,
+   expired      : BOOLEAN,
    targets_role : Role]
+
+TargetsMeta ==
+  [signatures   : SUBSET Signature,
+   version : Versions,
+   expired : BOOLEAN,
+   targets : SUBSET Targets]
 --------------------------------------------------------------------------------
 TypeOk ==
   /\ desired_target  \in ChooseableTargets
   /\ acquired_target \in ChooseableTargets
 
-  /\ \A i \in (1..Len(root_metas)) : Last(SubSeq(root_metas, 1, i)).version = i
+  /\ \A r \in root_metas : r \in RootMeta
   /\ targets_meta \in TargetsMeta \union {Nothing}
+
+RootsOk ==
+  /\ \A i \in (1..Len(root_metas)) : Last(SubSeq(root_metas, 1, i)).version = i
+
+  (* Roles can't have a number of keys lower than their threshold *)
+  /\ \A r \in root_metas : Cardinality(r.root_role.keys)    >= r.root_role.threshold
+  /\ \A r \in root_metas : Cardinality(r.targets_role.keys) >= r.targets_role.threshold
+
+  /\ \A r \in root_metas : Cardinality(r.signatures) > 0
+
+  (* Signatures on the root must only come from authorized keys and be valid. *)
+  /\ LET initial_root == Head(root_metas)
+     IN LET valid_authorized_sigs ==
+            {signature \in initial_root.signatures :
+             signature.key \in initial_root.root_role.keys /\ signature.valid }
+        IN Cardinality(valid_authorized_sigs) > initial_root.root_role.threshold
+
+RolesOk ==
+  /\ RootsOk
 --------------------------------------------------------------------------------
 SelectTarget ==
   /\ desired_target'  = CHOOSE t \in ChooseableTargets : TRUE
@@ -65,11 +92,16 @@ UpdateTargetsMeta ==
 TargetOk ==
   \/ acquired_target = Nothing
   \/ /\ acquired_target # Nothing
+     (* No metadata can be expired *)
+     /\ ~ Last(root_metas).expired     
+     /\ ~ targets_meta.expired     
+
      (* A valid target must be present in the targets metadata. *)
      /\ acquired_target \in targets_meta.targets
 --------------------------------------------------------------------------------
 Inv ==
   /\ TypeOk
+  /\ RolesOk
   /\ TargetOk
 
 Init ==
