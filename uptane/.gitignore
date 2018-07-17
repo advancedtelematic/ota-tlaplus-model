@@ -1,0 +1,5 @@
+*.pdf
+metadir/
+states/
+*.toolbox/
+*.tlaps/
